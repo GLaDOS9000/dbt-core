@@ -14,7 +14,7 @@ from typing import (
     Type,
     Union,
 )
-
+from dbt.config.selectors import SelectorDict
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import (
     Exposure,
@@ -37,6 +37,7 @@ from dbt_common.events.contextvars import get_project_root
 from dbt_common.exceptions import DbtInternalError, DbtRuntimeError
 
 from .graph import UniqueId
+
 
 SELECTOR_GLOB = "*"
 SELECTOR_DELIMITER = ":"
@@ -64,6 +65,7 @@ class MethodName(StrEnum):
     SemanticModel = "semantic_model"
     SavedQuery = "saved_query"
     UnitTest = "unit_test"
+    Nested = "nested"
 
 
 def is_selected_node(fqn: List[str], node_selector: str, is_versioned: bool) -> bool:
@@ -905,6 +907,59 @@ class VersionSelectorMethod(SelectorMethod):
                         f'Invalid version type selector {selector}: expected one of: "latest", "prerelease", "old", or "none"'
                     )
 
+class NestedSelectorMethod(SelectorMethod):
+    def __init__(self, manifest: Manifest, previous_state: Optional[PreviousState], arguments: List[str]) -> None:
+        super().__init__(manifest, previous_state, arguments)
+        self.method_manager = MethodManager(manifest, previous_state)  # Use MethodManager
+
+    def resolve_nested_selector(self, selector: Union[str, list], included_nodes: Set[UniqueId]) -> Set[UniqueId]:
+        """
+        Resolve a nested selector recursively.
+        """
+        if isinstance(selector, str):
+            # Base case: Delegate single selector to its method
+            return self.resolve_single_selector(selector, included_nodes)
+
+        # Process nested selectors
+        result_set = None
+        for element in selector:
+            if isinstance(element, list):
+                # Recursively resolve nested groups
+                sub_result = self.resolve_nested_selector(element, included_nodes)
+            else:
+                # Resolve single selector
+                sub_result = self.resolve_single_selector(element, included_nodes)
+
+            # Combine results using union or intersection
+            if result_set is None:
+                result_set = sub_result
+            elif ',' in element:  # Intersection
+                result_set &= sub_result
+            elif '+' in element:  # Union
+                result_set |= sub_result
+
+        return result_set
+
+    def resolve_single_selector(self, selector: str, included_nodes: Set[UniqueId]) -> Set[UniqueId]:
+        """
+        Resolve an individual selector string using the appropriate method.
+        """
+        # Parse the selector to identify its method (e.g., `tag:tag_name`)
+        if ':' in selector:
+            method_name, argument = selector.split(':', 1)
+            method = self.method_manager.get_method(MethodName(method_name), [argument])
+            return set(method.search(included_nodes, argument))
+        else:
+            # Default to FQN or nested logic if no explicit method is specified
+            return super().resolve_single_selector(selector, included_nodes)
+
+    def search(self, included_nodes: Set[UniqueId], selector: str) -> Iterator[UniqueId]:
+        """
+        Main entry point for the selector method.
+        """
+        parsed_selector = SelectorDict.parse_selector(selector)
+        resolved_set = self.resolve_nested_selector(parsed_selector, included_nodes)
+        yield from resolved_set
 
 class MethodManager:
     SELECTOR_METHODS: Dict[MethodName, Type[SelectorMethod]] = {
@@ -929,6 +984,7 @@ class MethodManager:
         MethodName.SemanticModel: SemanticModelSelectorMethod,
         MethodName.SavedQuery: SavedQuerySelectorMethod,
         MethodName.UnitTest: UnitTestSelectorMethod,
+        MethodName.Nested: NestedSelectorMethod,
     }
 
     def __init__(
@@ -948,3 +1004,4 @@ class MethodManager:
             )
         cls: Type[SelectorMethod] = self.SELECTOR_METHODS[method]
         return cls(self.manifest, self.previous_state, method_arguments)
+
