@@ -1,6 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Union
+from re import finditer
 
 from dbt.clients.yaml_helper import Dumper, Loader, load_yaml_text, yaml  # noqa: F401
 from dbt.contracts.selection import SelectorFile
@@ -179,18 +180,20 @@ class SelectorDict:
 
     @classmethod
     def parse_from_definition(cls, definition, selector_dict={}):
-        if isinstance(definition, str):
-            definition = SelectionCriteria.dict_from_single_spec(definition)
-        elif "union" in definition:
-            definition = cls.parse_a_definition("union", definition, selector_dict=selector_dict)
-        elif "intersection" in definition:
-            definition = cls.parse_a_definition(
-                "intersection", definition, selector_dict=selector_dict
-            )
+        if isinstance(definition, list):
+            # Resolve nested definitions recursively
+            parsed = []
+            for subdef in definition:
+                parsed.append(cls.parse_from_definition(subdef, selector_dict))
+            return parsed
+        elif isinstance(definition, str):
+            if '(' in definition and ')' in definition:
+                return cls.parse_selector(definition)
+            return SelectionCriteria.dict_from_single_spec(definition)
         elif isinstance(definition, dict):
-            definition = cls.parse_dict_definition(definition, selector_dict=selector_dict)
-        return definition
-
+            return cls.parse_dict_definition(definition, selector_dict=selector_dict)
+        else:
+            raise ValueError(f"Invalid definition: {definition}")
     # This is the normal entrypoint of this code. Give it the
     # list of selectors generated from the selectors.yml file.
     @classmethod
@@ -204,3 +207,35 @@ class SelectorDict:
             )
             selector_dict[sel_name]["definition"] = definition
         return selector_dict
+    
+    @classmethod
+    def parse_selector(cls, selector_str: str):
+        """
+        Parse a selector string with nested parentheses into a structured dictionary.
+        Supports union, intersection, and parent-degree syntax.
+        """
+        stack = []
+        current = []
+        
+        # Tokenize the string by parentheses and whitespace
+        for token in finditer(r'[()]|\S+', selector_str):
+            token = token.group()
+            if token == '(':
+                # Push the current list onto the stack and start a new group
+                stack.append(current)
+                current = []
+            elif token == ')':
+                # End the current group and append it to the previous one
+                if not stack:
+                    raise ValueError("Mismatched parentheses in selector")
+                group = current
+                current = stack.pop()
+                current.append(group)
+            else:
+                # Append tokens to the current group
+                current.append(token)
+        
+        if stack:
+            raise ValueError("Mismatched parentheses in selector")
+        
+        return current
