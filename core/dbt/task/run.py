@@ -25,6 +25,7 @@ from dbt.artifacts.schemas.run import RunResult
 from dbt.cli.flags import Flags
 from dbt.clients.jinja import MacroGenerator
 from dbt.config import RuntimeConfig
+from dbt.config.utils import resolve_nodes
 from dbt.context.providers import generate_runtime_model_context
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import BatchContext, HookNode, ModelNode, ResultNode
@@ -668,6 +669,52 @@ class RunTask(CompileTask):
     ) -> None:
         super().__init__(args, config, manifest)
         self.batch_map = batch_map
+
+    def resolve_selected_nodes(self) -> Set[str]:
+        """
+        Resolve nodes based on the provided --select argument.
+        This method does not filter the manifest but identifies selected nodes.
+        """
+        select_arg = getattr(self.args, "select", None)
+        resolved_nodes = resolve_nodes(self.manifest, select_arg)
+
+        # Log resolved nodes for debugging
+        if resolved_nodes:
+            fire_event(
+                LogStartLine(
+                    description=f"Resolved nodes: {', '.join(sorted(resolved_nodes))}"
+                )
+            )
+        else:
+            fire_event(LogStartLine(description="No nodes matched the provided selector."))
+
+        return resolved_nodes
+
+    def run(self) -> List[RunResult]:
+        """
+        Entry point for executing nodes based on selectors and other arguments.
+        """
+        adapter = self.adapter
+        resolved_nodes = self.resolve_selected_nodes()
+
+        with adapter.connection_named("run"):
+            self.before_run(adapter, resolved_nodes)
+
+            # Execute resolved nodes
+            pool = ThreadPool(self.args.threads)
+            results = []
+
+            def on_complete(result):
+                results.append(result)
+
+            while not self.job_queue.empty():
+                self.handle_job_queue(pool, on_complete)
+
+            pool.close()
+            pool.join()
+
+            self.after_run(adapter, results)
+        return results
 
     def raise_on_first_error(self) -> bool:
         return False

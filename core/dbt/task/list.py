@@ -2,6 +2,7 @@ import json
 from typing import Iterator, List
 
 from dbt.cli.flags import Flags
+from dbt.config.utils import resolve_nodes
 from dbt.config.runtime import RuntimeConfig
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import (
@@ -21,6 +22,9 @@ from dbt_common.events.contextvars import task_contextvars
 from dbt_common.events.functions import fire_event, warn_or_error
 from dbt_common.events.types import PrintEvent
 from dbt_common.exceptions import DbtInternalError, DbtRuntimeError
+
+
+
 
 
 class ListTask(GraphRunnableTask):
@@ -63,6 +67,10 @@ class ListTask(GraphRunnableTask):
                 raise DbtRuntimeError(
                     '"models" and "resource_type" are mutually exclusive ' "arguments"
                 )
+
+        self.manifest = self.apply_nested_selection(self.manifest, self.args.select, self.args.selector)
+        self.nodes = resolve_nodes(self.manifest, self.args.select, self.args.selector)
+
 
     def _iterate_selected_nodes(self):
         selector = self.get_node_selector()

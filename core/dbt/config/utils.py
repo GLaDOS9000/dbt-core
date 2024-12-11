@@ -1,11 +1,13 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from dbt.clients import yaml_helper
 from dbt.events.types import InvalidOptionYAML
 from dbt.exceptions import DbtExclusivePropertyUseError, OptionNotYamlDictError
 from dbt_common.events.functions import fire_event
 from dbt_common.exceptions import DbtValidationError
-
+from dbt.config.selectors import SelectorDict
+from dbt.graph.selector_methods import NestedSelectorMethod
+from dbt.contracts.graph.manifest import Manifest
 
 def parse_cli_vars(var_string: str) -> Dict[str, Any]:
     return parse_cli_yaml_string(var_string, "vars")
@@ -64,3 +66,23 @@ def normalize_warn_error_options(warn_error_options: Dict[str, Any]) -> None:
     for key in ("include", "exclude", "silence"):
         if key in warn_error_options and warn_error_options[key] is None:
             warn_error_options[key] = []
+
+
+
+def resolve_nodes(manifest: Manifest, selector_str: str) -> Set[str]:
+    """
+    Resolve nodes from the manifest based on a selector string.
+    
+    :param manifest: The dbt manifest object.
+    :param selector_str: The selector string to apply.
+    :return: A set of resolved node unique IDs.
+    """
+    if not selector_str:
+        return set(manifest.nodes.keys())
+
+    parsed_selector = SelectorDict.parse_selector(selector_str)
+    included_nodes = set(manifest.nodes.keys())
+    nested_method = NestedSelectorMethod(manifest, None, [])
+    resolved_nodes = nested_method.resolve_nested_selector(parsed_selector, included_nodes)
+
+    return resolved_nodes
